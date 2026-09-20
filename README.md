@@ -36,6 +36,10 @@ JSON/XML, missing HTML closing tags, invalid degree-only keyframe bodies, malfor
 keyframe selectors, and animated SVG groups whose transform origin would make them
 rotate out of place.
 
+Version 1.3.1 also adds an explicit creation fast path: when a user names a new
+output file or directory, the model is instructed to write the first complete
+draft before trying to read or validate a file that does not exist.
+
 ## Install
 
 ```powershell

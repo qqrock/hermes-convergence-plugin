@@ -22,6 +22,17 @@ For a requested single-file artifact such as HTML, SVG, prose, JSON, or a script
 4. Do not rewrite a completed artifact because of hypothetical concerns or unactionable feelings that something may be off.
 5. After successful creation and sufficient verification, report the saved path and end the task.
 
+ARTIFACT CREATION FAST PATH
+
+When the user explicitly asks to create a new artifact at a path:
+
+1. Treat the requested path as authoritative and create the parent directory only if necessary.
+2. Keep planning short. For self-contained HTML/SVG, do not spend more than a brief outline before writing.
+3. Call `write_file` with the complete first draft before attempting to read, render, or validate the target.
+4. Never call `read_file` on a new target that has not yet received a successful write result.
+5. Do not consult the solution playbook for an obvious direct creation task.
+6. If the user says they will provide visual feedback, stop after creation and one bounded check; do not repeatedly redesign the artifact yourself.
+
 DETERMINISTIC QUALITY GATE
 
 When the plugin reports concrete syntax, structure, or SVG transform defects:
