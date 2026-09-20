@@ -1,10 +1,10 @@
 name: convergence
-version: 1.2.0
+version: 1.3.0
 manifest_version: 1
 api_version: 1
 description: >
-  Hermes port of pi-extension-convergence. Tracks fresh validation evidence and
-  nudges the agent to stop re-running checks once enough independent proof exists.
+  Hermes port of pi-extension-convergence with deterministic HTML/SVG/CSS quality
+  gates, exact-path protection, and bounded post-write verification.
 author: qqrock (Hermes port), based on work by yang2020chen
 license: MIT
 homepage: https://github.com/qqrock/hermes-convergence-plugin

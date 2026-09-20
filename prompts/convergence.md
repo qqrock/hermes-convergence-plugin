@@ -21,3 +21,13 @@ For a requested single-file artifact such as HTML, SVG, prose, JSON, or a script
 3. Perform no more than one structural check and one visual/runtime check unless either check exposes a concrete defect.
 4. Do not rewrite a completed artifact because of hypothetical concerns or unactionable feelings that something may be off.
 5. After successful creation and sufficient verification, report the saved path and end the task.
+
+DETERMINISTIC QUALITY GATE
+
+When the plugin reports concrete syntax, structure, or SVG transform defects:
+
+1. Fix only the listed defects before attempting visual validation.
+2. Rewrite the complete corrected artifact to the same authoritative path.
+3. Use at most one visual/runtime check after the static gate is clean.
+4. Do not substitute repeated reads, terminal parsers, or guessed paths for fixing a reported defect.
+5. Once the permitted checks succeed, deliver the artifact instead of searching for another validation method.

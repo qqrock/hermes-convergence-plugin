@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import re
 import threading
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -61,6 +63,8 @@ class SessionState:
     artifact_verification_count: int = 0
     artifact_path_failures: int = 0
     artifact_steered: bool = False
+    quality_checked: bool = False
+    quality_issues: list[str] = field(default_factory=list)
 
     def reset_verification(self) -> None:
         self.passed_families.clear()
@@ -71,6 +75,8 @@ class SessionState:
         self.artifact_verification_count = 0
         self.artifact_path_failures = 0
         self.artifact_steered = False
+        self.quality_checked = False
+        self.quality_issues.clear()
 
 
 _states: dict[str, SessionState] = {}
@@ -182,6 +188,122 @@ def _source_path(args: Any) -> Optional[str]:
     return None
 
 
+def _source_content(args: Any) -> Optional[str]:
+    if not isinstance(args, dict):
+        return None
+    for key in ("content", "file_content"):
+        value = args.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _same_path(left: str, right: str) -> bool:
+    return ntpath.normcase(ntpath.normpath(left.strip().strip('"'))) == ntpath.normcase(
+        ntpath.normpath(right.strip().strip('"'))
+    )
+
+
+def _balanced(text: str, opening: str, closing: str) -> bool:
+    depth = 0
+    quote: Optional[str] = None
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and quote is None
+
+
+def _css_quality_issues(css: str, svg_group_ids: set[str]) -> list[str]:
+    issues: list[str] = []
+    if not _balanced(css, "{", "}"):
+        issues.append("CSS braces or quoted strings are unbalanced")
+
+    for match in re.finditer(r"\{\s*(-?\d+(?:\.\d+)?deg)\s*\}", css, re.IGNORECASE):
+        issues.append(
+            f"Invalid keyframe body '{{{match.group(1)}}}': use 'transform: rotate({match.group(1)});'"
+        )
+    if re.search(r"(?:^|[,{]\s*)\d+(?:\.\d+)?%\s*,\s*\d+(?:\.\d+)?%\s*-?\d+(?:\.\d+)?deg", css):
+        issues.append("Malformed @keyframes selector/body: percentage selectors must be followed by a declaration block")
+
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        selector, body = match.group(1).strip(), match.group(2)
+        if "animation" not in body or "transform-origin" in body:
+            continue
+        selected_ids = set(re.findall(r"#([a-zA-Z_][\w-]*)", selector))
+        affected_groups = sorted(selected_ids & svg_group_ids)
+        if affected_groups:
+            issues.append(
+                "Animated SVG group(s) " + ", ".join(f"#{item}" for item in affected_groups)
+                + " need transform-box: fill-box and transform-origin: center"
+            )
+    return issues
+
+
+def quality_issues_for_artifact(path: str, content: str) -> list[str]:
+    """Fast deterministic checks; no subprocesses and no speculative style critique."""
+    suffix = Path(path).suffix.lower()
+    issues: list[str] = []
+
+    if suffix == ".json":
+        try:
+            json.loads(content)
+        except ValueError as exc:
+            issues.append(f"Invalid JSON: {exc}")
+        return issues
+
+    if suffix not in {".html", ".htm", ".svg", ".css"}:
+        return issues
+
+    if suffix in {".html", ".htm"}:
+        for required in ("</html>", "</body>"):
+            if required not in content.lower():
+                issues.append(f"Missing required closing tag {required}")
+        svg_fragments = re.findall(r"<svg\b[\s\S]*?</svg>", content, re.IGNORECASE)
+        for index, fragment in enumerate(svg_fragments, 1):
+            try:
+                ET.fromstring(fragment)
+            except ET.ParseError as exc:
+                issues.append(f"Inline SVG #{index} is not well-formed XML: {exc}")
+        css_blocks = re.findall(r"<style\b[^>]*>([\s\S]*?)</style>", content, re.IGNORECASE)
+    elif suffix == ".svg":
+        try:
+            ET.fromstring(content)
+        except ET.ParseError as exc:
+            issues.append(f"SVG is not well-formed XML: {exc}")
+        svg_fragments = [content]
+        css_blocks = re.findall(r"<style\b[^>]*>([\s\S]*?)</style>", content, re.IGNORECASE)
+    else:
+        svg_fragments = []
+        css_blocks = [content]
+
+    svg_group_ids = {
+        match.group(1)
+        for fragment in svg_fragments
+        for match in re.finditer(r"<g\b[^>]*\bid=[\"']([^\"']+)[\"']", fragment, re.IGNORECASE)
+    }
+    for css in css_blocks:
+        issues.extend(_css_quality_issues(css, svg_group_ids))
+
+    return list(dict.fromkeys(issues))
+
+
 def _is_path_failure(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in (
@@ -200,9 +322,29 @@ def _artifact_guidance(state: SessionState, tool_name: str, args: Any, result: A
             if path:
                 state.last_written_path = path
                 logger.info("Artifact write succeeded at %s", path)
+                content = _source_content(args)
+                if content is not None:
+                    state.quality_checked = True
+                    state.quality_issues = quality_issues_for_artifact(path, content)
+                    if state.quality_issues:
+                        logger.info("Static artifact quality gate found %s issue(s)", len(state.quality_issues))
+                        bullets = "\n".join(f"- {issue}" for issue in state.quality_issues)
+                        return (
+                            original
+                            + "\n\n[Convergence / static quality gate]\n"
+                            + bullets
+                            + "\nFix only these concrete defects, write the corrected full artifact, then perform "
+                            + "at most one visual/runtime check. Do not begin unrelated rewrites or speculative checks."
+                        )
+                    # The deterministic gate is the structural check. Only one
+                    # additional visual/runtime check remains useful.
+                    state.artifact_verification_count = 1
         return None
 
     if state.last_written_path is None or tool_name not in ARTIFACT_VERIFICATION_TOOLS:
+        return None
+
+    if state.quality_issues:
         return None
 
     text = _result_text(result)
@@ -272,11 +414,35 @@ def looks_passed(text: str, family: str) -> bool:
     return False
 
 
-def on_source_tool(tool_name: str = "", **kwargs: Any) -> None:
-    if str(tool_name).lower() not in SOURCE_TOOLS:
-        return
+def on_source_tool(tool_name: str = "", args: Any = None, **kwargs: Any) -> Optional[dict[str, str]]:
+    normalized_tool = str(tool_name).lower()
     with _lock:
         state = _state(kwargs)
+        if normalized_tool not in SOURCE_TOOLS:
+            if state.last_written_path and normalized_tool == "read_file":
+                requested_path = _source_path(args)
+                if requested_path and not _same_path(requested_path, state.last_written_path):
+                    return {
+                        "action": "block",
+                        "message": (
+                            "The requested read path does not match the authoritative successful write path. "
+                            f"Use exactly: {state.last_written_path}. Do not abbreviate or reconstruct it."
+                        ),
+                    }
+            if (
+                state.artifact_steered
+                and not state.quality_issues
+                and normalized_tool in ARTIFACT_VERIFICATION_TOOLS
+            ):
+                return {
+                    "action": "block",
+                    "message": (
+                        "This artifact already passed the allowed verification budget. "
+                        f"Deliver the saved artifact at {state.last_written_path} and finish the task."
+                    ),
+                }
+            return None
+
         state.source_revision += 1
         state.reset_verification()
         was_steered = state.steered
@@ -285,6 +451,7 @@ def on_source_tool(tool_name: str = "", **kwargs: Any) -> None:
             logger.info("Source modified after steer (revision %s); steering unlocked", state.source_revision)
         else:
             logger.info("Source modified (revision %s); prior evidence reset", state.source_revision)
+    return None
 
 
 def transform_tool_result(

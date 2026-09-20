@@ -29,8 +29,12 @@ state isolation, thread safety, Windows path handling, and automatic injection o
 the bundled Completion Policy.
 
 For single-file artifacts, the Hermes layer remembers the exact successful write
-path, corrects path-guessing loops, and asks the model to deliver after two successful
-post-write checks unless a concrete defect was observed.
+path, blocks path-guessing loops, and asks the model to deliver after two successful
+post-write checks unless a concrete defect was observed. Version 1.3 adds a fast,
+dependency-free static quality gate for JSON and HTML/SVG/CSS. It catches malformed
+JSON/XML, missing HTML closing tags, invalid degree-only keyframe bodies, malformed
+keyframe selectors, and animated SVG groups whose transform origin would make them
+rotate out of place.
 
 ## Install
 
@@ -57,7 +61,8 @@ hermes plugins validate .
 - Per-session, thread-safe state
 - No external Python dependencies
 - Upstream-compatible classification, fingerprints, PASS markers, counters, and steering text
-- Steering only; never blocks or kills the agent
+- Blocks only a mismatched post-write read path or verification beyond the completed
+  artifact budget; normal creation, correction, and task tools remain available
 
 ## Attribution
 
