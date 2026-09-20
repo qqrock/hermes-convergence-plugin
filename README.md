@@ -14,15 +14,23 @@ enough.
 
 ## Completion oracle
 
-Strong steering requires both:
+The runtime behavior now mirrors the upstream v1.0 implementation:
 
-1. an automated test command passed; and
-2. a real `/api/` or `/v1/` business endpoint probe passed.
+1. checks are classified as test, build, or business-runtime evidence;
+2. output must contain the same positive PASS markers used upstream;
+3. two distinct passing evidence families trigger strong steering;
+4. three repeated or consecutive passing checks trigger soft steering;
+5. any source edit clears evidence and unlocks steering.
 
-The plugin deliberately excludes `/health`, file inspection, grep, database
-schema inspection, and build success as sufficient completion evidence. It also
-emits a softer reminder when the exact same test passes three times without a
-source edit. Any source-edit tool clears all prior evidence.
+The plugin deliberately excludes `/health`, file inspection, grep, and database
+schema inspection. As in upstream v1.0, build is an evidence family and can pair
+with tests for the two-family threshold. Hermes-specific additions are per-session
+state isolation, thread safety, Windows path handling, and automatic injection of
+the bundled Completion Policy.
+
+For single-file artifacts, the Hermes layer remembers the exact successful write
+path, corrects path-guessing loops, and asks the model to deliver after two successful
+post-write checks unless a concrete defect was observed.
 
 ## Install
 
@@ -45,9 +53,10 @@ hermes plugins validate .
 
 ## Design
 
-- Hermes hooks: `pre_tool_call`, `transform_tool_result`, `on_session_end`
+- Hermes hooks: `pre_tool_call`, `transform_tool_result`, `pre_llm_call`, `on_session_end`
 - Per-session, thread-safe state
 - No external Python dependencies
+- Upstream-compatible classification, fingerprints, PASS markers, counters, and steering text
 - Steering only; never blocks or kills the agent
 
 ## Attribution

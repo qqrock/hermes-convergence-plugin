@@ -16,46 +16,89 @@ class ConvergenceTests(unittest.TestCase):
     def setUp(self):
         MODULE._states.clear()
 
-    def call(self, command, result='{"output":"ok","exit_code":0,"error":null}', session="s1"):
+    def call(self, command, output="1 passed in 0.01s", session="s1", exit_code=0):
+        result = {"output": output, "exit_code": exit_code, "error": None}
         return MODULE.transform_tool_result(
             tool_name="terminal", args={"command": command}, result=result,
             status="ok", session_id=session,
         )
 
-    def test_test_and_business_runtime_trigger_once(self):
-        self.assertIsNone(self.call("pytest -q"))
-        changed = self.call("curl http://localhost:8080/api/items")
-        self.assertIsNotNone(changed)
-        self.assertIn("收敛提醒", changed)
-        self.assertIsNone(self.call("pytest -q"))
+    def test_upstream_test_fingerprints(self):
+        self.assertEqual(MODULE.classify_check("pytest tests/test_api.py -q").fingerprint, "pytest:tests/test_api.py")
+        self.assertEqual(MODULE.classify_check("node --test dist/tests/user.test.js").fingerprint, "npm_test:dist/tests/user.test.js")
 
-    def test_three_identical_passes_trigger(self):
-        self.assertIsNone(self.call("pytest -q"))
-        self.assertIsNone(self.call("pytest -q"))
-        self.assertIn("收敛提醒", self.call("pytest -q"))
+    def test_positive_pass_marker_is_required(self):
+        self.assertIsNone(self.call("pytest -q", output="completed with exit code zero"))
+        self.assertIsNone(self.call("pytest -q", output="1 failed, 5 passed", exit_code=0))
 
-    def test_source_edit_resets_evidence(self):
+    def test_two_upstream_families_trigger_strong_steer(self):
         self.assertIsNone(self.call("pytest -q"))
+        changed = self.call("curl -i http://localhost:8080/api/items", output='HTTP/1.1 200 OK\n{"items":[]}')
+        self.assertIn(MODULE.STRONG_STEER_TEXT, changed)
+
+    def test_build_plus_test_matches_upstream_multi_family_rule(self):
+        self.assertIsNone(self.call("npm run build", output="build succeeded"))
+        changed = self.call("pytest -q")
+        self.assertIn(MODULE.STRONG_STEER_TEXT, changed)
+
+    def test_three_same_test_passes_trigger_soft_steer(self):
+        self.assertIsNone(self.call("pytest tests/test_api.py -q"))
+        self.assertIsNone(self.call("pytest tests/test_api.py -q"))
+        changed = self.call("pytest tests/test_api.py -q")
+        self.assertIn(MODULE.SOFT_STEER_TEXT, changed)
+
+    def test_different_checks_do_not_count_as_consecutive_upstream_repeats(self):
+        self.assertIsNone(self.call("pytest tests/test_a.py -q"))
+        self.assertIsNone(self.call("pytest tests/test_b.py -q"))
+        self.assertIsNone(self.call("pytest tests/test_c.py -q"))
+
+    def test_health_is_excluded(self):
+        self.assertIsNone(MODULE.classify_check("curl http://localhost:8080/health"))
+
+    def test_source_edit_clears_evidence_and_unlocks(self):
+        self.call("pytest -q")
+        self.call("curl -i http://localhost/api/items", output="HTTP/1.1 200 OK")
         MODULE.on_source_tool(tool_name="write_file", session_id="s1")
-        self.assertIsNone(self.call("curl http://localhost:8080/api/items"))
+        state = MODULE._states["s1"]
+        self.assertFalse(state.steered)
+        self.assertEqual(state.passed_families, set())
 
-    def test_failed_command_is_not_evidence(self):
-        failed = '{"output":"1 failed","exit_code":1,"error":null}'
-        for _ in range(4):
-            self.assertIsNone(self.call("pytest -q", failed))
+    def test_sessions_are_isolated_hermes_extension(self):
+        self.call("pytest -q", session="a")
+        self.call("curl -i http://localhost/api/items", output="HTTP/1.1 200 OK", session="b")
+        self.assertEqual(MODULE._states["a"].passed_families, {"test"})
+        self.assertEqual(MODULE._states["b"].passed_families, {"runtime"})
 
-    def test_health_probe_is_excluded_but_api_probe_counts(self):
-        self.assertIsNone(self.call("curl http://localhost:8080/health"))
-        self.assertIsNone(self.call("curl http://localhost:8080/api/items"))
-        self.assertIn("收敛提醒", self.call("pytest -q"))
+    def test_completion_policy_is_loaded(self):
+        self.assertIn("TASK COMPLETION POLICY", MODULE.completion_policy()["context"])
 
-    def test_build_plus_test_is_not_a_strong_oracle(self):
-        self.assertIsNone(self.call("npm run build"))
-        self.assertIsNone(self.call("pytest -q"))
+    def test_path_failure_repeats_authoritative_written_path(self):
+        MODULE.on_source_tool(tool_name="write_file", session_id="s1")
+        MODULE.transform_tool_result(
+            tool_name="write_file", args={"path": r"C:\Users\rock\Desktop\pelican-motorcycle.html"},
+            result='{"message":"written"}', status="ok", session_id="s1",
+        )
+        changed = MODULE.transform_tool_result(
+            tool_name="read_file", args={"path": r"C:\Users\rock\Desktop\pel..."},
+            result='{"error":"File not found"}', status="error", session_id="s1",
+        )
+        self.assertIn(r"C:\Users\rock\Desktop\pelican-motorcycle.html", changed)
 
-    def test_session_state_is_isolated(self):
-        self.assertIsNone(self.call("pytest -q", session="a"))
-        self.assertIsNone(self.call("curl http://localhost/api/items", session="b"))
+    def test_two_successful_artifact_checks_trigger_delivery(self):
+        MODULE.on_source_tool(tool_name="write_file", session_id="s1")
+        MODULE.transform_tool_result(
+            tool_name="write_file", args={"path": "artifact.html"},
+            result='{"message":"written"}', status="ok", session_id="s1",
+        )
+        self.assertIsNone(MODULE.transform_tool_result(
+            tool_name="read_file", args={"path": "artifact.html"},
+            result='{"content":"<html></html>"}', status="ok", session_id="s1",
+        ))
+        changed = MODULE.transform_tool_result(
+            tool_name="browser_navigate", args={"url": "file:///artifact.html"},
+            result='{"title":"artifact"}', status="ok", session_id="s1",
+        )
+        self.assertIn(MODULE.ARTIFACT_STEER_TEXT, changed)
 
 
 if __name__ == "__main__":
