@@ -1,0 +1,16 @@
+name: convergence
+version: 1.0.0
+manifest_version: 1
+api_version: 1
+description: >
+  Hermes port of pi-extension-convergence. Tracks fresh validation evidence and
+  nudges the agent to stop re-running checks once enough independent proof exists.
+author: qqrock (Hermes port), based on work by yang2020chen
+license: MIT
+homepage: https://github.com/qqrock/hermes-convergence-plugin
+requires_hermes: ">=0.21"
+tags: [workflow, validation, convergence, efficiency]
+provides_hooks:
+  - pre_tool_call
+  - transform_tool_result
+  - on_session_end
